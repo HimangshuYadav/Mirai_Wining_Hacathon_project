@@ -8,11 +8,12 @@ from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Any
+import hashlib
 
 import cv2
 import numpy as np
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Request, status, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from groq import AsyncGroq
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -61,6 +62,17 @@ class SosRequest(BaseModel):
     longitude: float
     location_link: str = Field(..., min_length=1)
     timestamp: str | None = Field(None)
+
+class CaretakerRegisterRequest(BaseModel):
+    username: str = Field(..., min_length=3, max_length=50)
+    password: str = Field(..., min_length=6)
+    phone: str = Field(..., min_length=5, max_length=20)
+
+class CaretakerLoginRequest(BaseModel):
+    username: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=1)
+
+caretaker_websockets: dict[str, list[WebSocket]] = {}
 
 
 def utc_now() -> datetime:
@@ -140,6 +152,9 @@ def require_summary_text(response: Any) -> str:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Groq returned no summary.")
     return summary
 
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
 def serialize_memory(memory: dict[str, Any]) -> dict[str, Any]:
     return {"id": str(memory["_id"]), "person_id": memory["person_id"], "note": memory["note"], "created_at": memory["created_at"]}
 
@@ -158,6 +173,7 @@ async def lifespan(app: FastAPI):
     app.state.face_encoder = FaceEncoder()
     await app.state.db.people.create_index([("person_id", ASCENDING)], unique=True)
     await app.state.db.memories.create_index([("person_id", ASCENDING), ("created_at", DESCENDING)])
+    await app.state.db.caretakers.create_index([("username", ASCENDING)], unique=True)
     try:
         yield
     finally:
@@ -289,5 +305,90 @@ async def send_sos(payload: SosRequest, request: Request) -> dict[str, Any]:
         await request.app.state.db.sos_alerts.insert_one(alert)
     except PyMongoError as exc:
         raise HTTPException(status_code=503, detail="Could not save SOS alert.") from exc
+
+    # Broadcast to connected caretaker WebSockets
+    phone = payload.caregiver_phone
+    if phone in caretaker_websockets:
+        sockets = caretaker_websockets[phone]
+        for ws in list(sockets):
+            try:
+                await ws.send_json({
+                    "person_name": payload.person_name,
+                    "caregiver_phone": payload.caregiver_phone,
+                    "latitude": payload.latitude,
+                    "longitude": payload.longitude,
+                    "location_link": payload.location_link,
+                    "timestamp": alert["timestamp"]
+                })
+            except Exception:
+                try:
+                    sockets.remove(ws)
+                except Exception:
+                    pass
+
     return {"status": "success", "message": f"SOS alert processed for {payload.person_name}"}
+
+@app.post("/caretaker/register", status_code=status.HTTP_201_CREATED)
+async def caretaker_register(payload: CaretakerRegisterRequest, request: Request) -> dict[str, Any]:
+    existing = await request.app.state.db.caretakers.find_one({"username": payload.username.strip()})
+    if existing:
+        raise HTTPException(status_code=400, detail="Username is already taken.")
+    
+    caretaker = {
+        "username": payload.username.strip(),
+        "password": hash_password(payload.password),
+        "phone": payload.phone.strip(),
+        "created_at": utc_now()
+    }
+    try:
+        await request.app.state.db.caretakers.insert_one(caretaker)
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail="Could not register caretaker.") from exc
+    return {"status": "success", "username": caretaker["username"], "phone": caretaker["phone"]}
+
+@app.post("/caretaker/login")
+async def caretaker_login(payload: CaretakerLoginRequest, request: Request) -> dict[str, Any]:
+    caretaker = await request.app.state.db.caretakers.find_one({"username": payload.username.strip()})
+    if not caretaker or caretaker["password"] != hash_password(payload.password):
+        raise HTTPException(status_code=401, detail="Invalid username or password.")
+    return {
+        "status": "success",
+        "username": caretaker["username"],
+        "phone": caretaker["phone"]
+    }
+
+@app.get("/sos/alerts/{caregiver_phone}")
+async def get_sos_alerts(caregiver_phone: str, request: Request) -> dict[str, Any]:
+    cursor = request.app.state.db.sos_alerts.find({"caregiver_phone": caregiver_phone}).sort("created_at", DESCENDING).limit(50)
+    alerts = []
+    async for doc in cursor:
+        alerts.append({
+            "person_name": doc["person_name"],
+            "caregiver_phone": doc["caregiver_phone"],
+            "latitude": doc["latitude"],
+            "longitude": doc["longitude"],
+            "location_link": doc["location_link"],
+            "timestamp": doc.get("timestamp") or doc["created_at"].isoformat()
+        })
+    return {"caregiver_phone": caregiver_phone, "alerts": alerts}
+
+@app.websocket("/sos/ws/{caregiver_phone}")
+async def sos_websocket(websocket: WebSocket, caregiver_phone: str):
+    await websocket.accept()
+    if caregiver_phone not in caretaker_websockets:
+        caretaker_websockets[caregiver_phone] = []
+    caretaker_websockets[caregiver_phone].append(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        if caregiver_phone in caretaker_websockets:
+            if websocket in caretaker_websockets[caregiver_phone]:
+                caretaker_websockets[caregiver_phone].remove(websocket)
+            if not caretaker_websockets[caregiver_phone]:
+                del caretaker_websockets[caregiver_phone]
 
