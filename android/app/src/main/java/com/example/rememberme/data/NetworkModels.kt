@@ -7,7 +7,8 @@ data class ImagePayload(
 data class EnrollRequest(
     val name: String,
     val relationship: String,
-    val image: String
+    val image: String,
+    val caregiver_phone: String? = null
 )
 
 data class MemoryLogRequest(
@@ -22,7 +23,8 @@ data class SummarizeRequest(
 data class PersonMatch(
     val person_id: String,
     val name: String,
-    val relationship: String
+    val relationship: String,
+    val caregiver_phone: String? = null
 )
 
 data class IdentifyResponse(
@@ -35,4 +37,12 @@ data class SummaryResponse(
     val name: String,
     val relationship: String,
     val summary: String
+)
+
+data class SosRequest(
+    val person_name: String,
+    val caregiver_phone: String,
+    val latitude: Double,
+    val longitude: Double,
+    val location_link: String
 )

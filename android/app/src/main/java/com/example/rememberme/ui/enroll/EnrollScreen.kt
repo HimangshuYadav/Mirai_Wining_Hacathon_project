@@ -61,6 +61,7 @@ fun EnrollScreen(
     // State variables
     var name by remember { mutableStateOf("") }
     var relationship by remember { mutableStateOf("") }
+    var caregiverPhone by remember { mutableStateOf("") }
     var capturedBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var capturedBase64 by remember { mutableStateOf("") }
     var message by remember { mutableStateOf("Use a well-lit, front-facing photo with only one person visible.") }
@@ -317,6 +318,32 @@ fun EnrollScreen(
                             modifier = Modifier.fillMaxWidth()
                         )
 
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // Caregiver Phone Input
+                        Text(
+                            text = "Caregiver Phone",
+                            color = Color.LightGray,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.padding(bottom = 6.dp)
+                        )
+                        OutlinedTextField(
+                            value = caregiverPhone,
+                            onValueChange = { caregiverPhone = it },
+                            textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
+                            placeholder = { Text("9876543210", color = Color.Gray) },
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = MintColor,
+                                unfocusedBorderColor = Color.White.copy(alpha = 0.10f),
+                                focusedContainerColor = Color.Black.copy(alpha = 0.25f),
+                                unfocusedContainerColor = Color.Black.copy(alpha = 0.25f)
+                            ),
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
                         Spacer(modifier = Modifier.height(20.dp))
 
                         // Guideline / Status Message Text
@@ -351,13 +378,15 @@ fun EnrollScreen(
                                             EnrollRequest(
                                                 name = name.trim(),
                                                 relationship = relationship.trim(),
-                                                image = capturedBase64
+                                                image = capturedBase64,
+                                                caregiver_phone = if (caregiverPhone.trim().isEmpty()) null else caregiverPhone.trim()
                                             )
                                         )
                                         message = "${response.name} has been added as ${response.relationship}."
                                         // Clear form
                                         name = ""
                                         relationship = ""
+                                        caregiverPhone = ""
                                         capturedBitmap = null
                                         capturedBase64 = ""
                                     } catch (e: Exception) {

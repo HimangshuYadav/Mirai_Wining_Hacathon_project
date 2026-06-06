@@ -9,11 +9,25 @@ class PreferencesManager(context: Context) {
     companion object {
         private const val KEY_API_URL = "api_url"
         private const val DEFAULT_API_URL = "https://miraiwininghacathonproject-production.up.railway.app"
+        private const val KEY_CAREGIVER_NAME = "caregiver_name"
+        private const val KEY_CAREGIVER_PHONE = "caregiver_phone"
     }
 
     var apiUrl: String
         get() = prefs.getString(KEY_API_URL, DEFAULT_API_URL) ?: DEFAULT_API_URL
         set(value) {
             prefs.edit().putString(KEY_API_URL, value).apply()
+        }
+
+    var caregiverName: String
+        get() = prefs.getString(KEY_CAREGIVER_NAME, "") ?: ""
+        set(value) {
+            prefs.edit().putString(KEY_CAREGIVER_NAME, value).apply()
+        }
+
+    var caregiverPhone: String
+        get() = prefs.getString(KEY_CAREGIVER_PHONE, "") ?: ""
+        set(value) {
+            prefs.edit().putString(KEY_CAREGIVER_PHONE, value).apply()
         }
 }
