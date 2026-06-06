@@ -1,0 +1,854 @@
+package com.example.rememberme.ui.main
+
+import android.Manifest
+import android.content.Context
+import android.graphics.Bitmap
+import android.util.Base64
+import android.util.Log
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageProxy
+import androidx.camera.core.Preview
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.core.content.ContextCompat
+import com.example.rememberme.data.*
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.face.FaceDetection
+import com.google.mlkit.vision.face.FaceDetectorOptions
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import java.io.ByteArrayOutputStream
+import java.util.Locale
+import java.util.concurrent.Executors
+
+// Color Theme
+val InkColor = Color(0xFF080B12)
+val PanelColor = Color(0xFF111827)
+val MintColor = Color(0xFF63E6BE)
+val BorderColor = Color(0xFF2E333F)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MainScreen(
+    onNavigateToEnroll: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
+    // Preferences and states
+    val prefManager = remember { PreferencesManager(context) }
+    var currentChallenge by remember { mutableStateOf(Challenge.random()) }
+    var livenessStatus by remember { mutableStateOf(LivenessStatus.Waiting) }
+    var statusText by remember { mutableStateOf("Looking for a familiar face...") }
+    var recognition by remember { mutableStateOf<SummaryResponse?>(null) }
+    
+    // API config modal
+    var showApiSettings by remember { mutableStateOf(false) }
+    var apiInputUrl by remember { mutableStateOf(prefManager.apiUrl) }
+
+    // Memory modal
+    var showMemoryModal by remember { mutableStateOf(false) }
+    var memoryNote by remember { mutableStateOf("") }
+    var isSavingMemory by remember { mutableStateOf(false) }
+    var isMemorySaved by remember { mutableStateOf(false) }
+
+    // Camera states
+    var cameraPermissionGranted by remember { mutableStateOf(false) }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        cameraPermissionGranted = granted
+    }
+
+    LaunchedEffect(Unit) {
+        permissionLauncher.launch(Manifest.permission.CAMERA)
+    }
+
+    // Liveness challenge timers
+    LaunchedEffect(currentChallenge, livenessStatus) {
+        if (livenessStatus == LivenessStatus.Waiting) {
+            // Give 10 seconds to pass challenge
+            delay(10000)
+            if (livenessStatus == LivenessStatus.Waiting) {
+                livenessStatus = LivenessStatus.Failed
+            }
+        } else if (livenessStatus == LivenessStatus.Failed) {
+            delay(2000)
+            livenessStatus = LivenessStatus.Waiting
+            currentChallenge = Challenge.random()
+        } else if (livenessStatus == LivenessStatus.Passed) {
+            // Keep verified state for 30 seconds
+            delay(30000)
+            livenessStatus = LivenessStatus.Waiting
+            currentChallenge = Challenge.random()
+            recognition = null
+        }
+    }
+
+    val faceDetector = remember {
+        val options = FaceDetectorOptions.Builder()
+            .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+            .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
+            .build()
+        FaceDetection.getClient(options)
+    }
+
+    Scaffold(
+        modifier = modifier
+            .fillMaxSize()
+            .background(InkColor),
+        topBar = {
+            TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = InkColor,
+                    titleContentColor = Color.White
+                ),
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "Remember",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 20.sp,
+                            color = Color.White
+                        )
+                        Text(
+                            text = "Me",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 20.sp,
+                            color = MintColor
+                        )
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { showApiSettings = true }) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = "API Settings",
+                            tint = Color.LightGray
+                        )
+                    }
+                    Button(
+                        onClick = onNavigateToEnroll,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color.Transparent
+                        ),
+                        modifier = Modifier
+                            .padding(end = 8.dp)
+                            .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(20.dp))
+                    ) {
+                        Text(
+                            text = "Add familiar face",
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+            )
+        }
+    ) { innerPadding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .background(InkColor)
+                .padding(16.dp)
+        ) {
+            Column(
+                modifier = Modifier.fillMaxSize()
+            ) {
+                // Header Titles
+                Text(
+                    text = "YOUR MEMORY COMPANION",
+                    color = MintColor,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 2.sp,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
+                Text(
+                    text = "See someone you know.",
+                    color = Color.White,
+                    fontSize = 26.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(bottom = 16.dp)
+                )
+
+                // Main Camera Feed Container (Refactored to nested function to avoid ColumnScope resolution conflict)
+                DashboardCamera(
+                    cameraPermissionGranted = cameraPermissionGranted,
+                    prefManager = prefManager,
+                    faceDetector = faceDetector,
+                    currentChallenge = currentChallenge,
+                    livenessStatus = livenessStatus,
+                    statusText = statusText,
+                    recognition = recognition,
+                    onLivenessStatusChange = { livenessStatus = it },
+                    onStatusTextChange = { statusText = it },
+                    onRecognitionChange = { recognition = it },
+                    onShowMemoryModal = { showMemoryModal = true },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                )
+            }
+        }
+    }
+
+    // Modal Dialog for adding Memory Logs
+    if (showMemoryModal && recognition != null) {
+        val rec = recognition!!
+        Dialog(onDismissRequest = {
+            showMemoryModal = false
+            memoryNote = ""
+            isMemorySaved = false
+        }) {
+            Card(
+                shape = RoundedCornerShape(24.dp),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF090D16)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp)
+                ) {
+                    Text(
+                        text = "Add a memory",
+                        color = Color.White,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                    Text(
+                        text = "Write a note about ${rec.name} — it will make future summaries more personal.",
+                        color = Color.Gray,
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp,
+                        modifier = Modifier.padding(bottom = 16.dp)
+                    )
+
+                    // Text Area input
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(110.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(Color.White.copy(alpha = 0.05f))
+                            .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(16.dp))
+                            .padding(12.dp)
+                    ) {
+                        if (memoryNote.isEmpty()) {
+                            Text(
+                                text = "e.g. \"${rec.name} visited today, we watched the game and had tea.\"",
+                                color = Color.Gray,
+                                fontSize = 13.sp
+                            )
+                        }
+                        BasicTextField(
+                            value = memoryNote,
+                            onValueChange = { memoryNote = it },
+                            textStyle = TextStyle(color = Color.White, fontSize = 13.sp),
+                            cursorBrush = SolidColor(MintColor),
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Button(
+                            onClick = {
+                                if (memoryNote.trim().isNotEmpty()) {
+                                    isSavingMemory = true
+                                    coroutineScope.launch {
+                                        try {
+                                            val api = NetworkClient.createService(prefManager.apiUrl)
+                                            api.logMemory(MemoryLogRequest(rec.person_id, memoryNote.trim()))
+                                            isMemorySaved = true
+                                            delay(1200)
+                                            showMemoryModal = false
+                                            memoryNote = ""
+                                            isMemorySaved = false
+                                        } catch (e: Exception) {
+                                            e.printStackTrace()
+                                        } finally {
+                                            isSavingMemory = false
+                                        }
+                                    }
+                                }
+                            },
+                            enabled = !isSavingMemory && memoryNote.trim().isNotEmpty(),
+                            colors = ButtonDefaults.buttonColors(containerColor = MintColor),
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = if (isMemorySaved) "✓ Saved!" else if (isSavingMemory) "Saving..." else "Save memory",
+                                color = InkColor,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        Button(
+                            onClick = {
+                                showMemoryModal = false
+                                memoryNote = ""
+                                isMemorySaved = false
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier.border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(16.dp))
+                        ) {
+                            Text(text = "Cancel", color = Color.LightGray)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Modal Dialog for configuring dynamic API Base URL
+    if (showApiSettings) {
+        Dialog(onDismissRequest = { showApiSettings = false }) {
+            Card(
+                shape = RoundedCornerShape(24.dp),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF090D16)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp)
+                ) {
+                    Text(
+                        text = "Server Configuration",
+                        color = Color.White,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(bottom = 6.dp)
+                    )
+                    Text(
+                        text = "Configure the backend API URL. Defaults to http://10.0.2.2:8000 for local emulator testing.",
+                        color = Color.Gray,
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp,
+                        modifier = Modifier.padding(bottom = 16.dp)
+                    )
+
+                    // URL text input
+                    OutlinedTextField(
+                        value = apiInputUrl,
+                        onValueChange = { apiInputUrl = it },
+                        textStyle = TextStyle(color = Color.White, fontSize = 13.sp),
+                        label = { Text("API Base URL") },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = MintColor,
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.15f),
+                            focusedLabelColor = MintColor,
+                            unfocusedLabelColor = Color.Gray
+                        ),
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions.Default.copy(imeAction = ImeAction.Done),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Button(
+                            onClick = {
+                                prefManager.apiUrl = apiInputUrl.trim()
+                                showApiSettings = false
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = MintColor),
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(text = "Save", color = InkColor, fontWeight = FontWeight.Bold)
+                        }
+
+                        Button(
+                            onClick = { showApiSettings = false },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier.border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(16.dp))
+                        ) {
+                            Text(text = "Cancel", color = Color.LightGray)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun DashboardCamera(
+    cameraPermissionGranted: Boolean,
+    prefManager: PreferencesManager,
+    faceDetector: com.google.mlkit.vision.face.FaceDetector,
+    currentChallenge: Challenge,
+    livenessStatus: LivenessStatus,
+    statusText: String,
+    recognition: SummaryResponse?,
+    onLivenessStatusChange: (LivenessStatus) -> Unit,
+    onStatusTextChange: (String) -> Unit,
+    onRecognitionChange: (SummaryResponse?) -> Unit,
+    onShowMemoryModal: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val coroutineScope = rememberCoroutineScope()
+
+    // Wrap state arguments in rememberUpdatedState to avoid stale captures on background thread
+    val latestChallenge by rememberUpdatedState(currentChallenge)
+    val latestLivenessStatus by rememberUpdatedState(livenessStatus)
+    val latestRecognition by rememberUpdatedState(recognition)
+    val latestOnLivenessStatusChange by rememberUpdatedState(onLivenessStatusChange)
+    val latestOnStatusTextChange by rememberUpdatedState(onStatusTextChange)
+    val latestOnRecognitionChange by rememberUpdatedState(onRecognitionChange)
+
+    var lastIdentifyTime by remember { mutableLongStateOf(0L) }
+    var isIdentifyInFlight by remember { mutableStateOf(false) }
+    var cachedPersonId by remember { mutableStateOf("") }
+
+    LaunchedEffect(recognition) {
+        if (recognition == null) {
+            cachedPersonId = ""
+        }
+    }
+
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(32.dp))
+            .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(32.dp))
+            .background(PanelColor)
+    ) {
+        if (cameraPermissionGranted) {
+            AndroidView(
+                factory = { ctx ->
+                    val previewView = PreviewView(ctx).apply {
+                        scaleType = PreviewView.ScaleType.FILL_CENTER
+                    }
+                    val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
+                    cameraProviderFuture.addListener({
+                        val cameraProvider = cameraProviderFuture.get()
+                        val preview = Preview.Builder().build().also {
+                            it.setSurfaceProvider(previewView.surfaceProvider)
+                        }
+
+                        val imageAnalysis = ImageAnalysis.Builder()
+                            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                            .build()
+
+                        imageAnalysis.setAnalyzer(
+                            Executors.newSingleThreadExecutor()
+                        ) { imageProxy ->
+                            val mediaImage = imageProxy.image
+                            if (mediaImage != null) {
+                                val inputImage = InputImage.fromMediaImage(
+                                    mediaImage,
+                                    imageProxy.imageInfo.rotationDegrees
+                                )
+                                faceDetector.process(inputImage)
+                                    .addOnSuccessListener { faces ->
+                                        val status = latestLivenessStatus
+                                        val challenge = latestChallenge
+                                        if (faces.isNotEmpty()) {
+                                            val face = faces[0]
+                                            val smile = face.smilingProbability ?: 0f
+                                            val yaw = face.headEulerAngleY
+                                            Log.d("LivenessCheck", "Face detected! Smile: $smile, Yaw: $yaw. Challenge: $challenge, Status: $status")
+
+                                            if (status == LivenessStatus.Waiting) {
+                                                when (challenge) {
+                                                    Challenge.SMILE -> {
+                                                        if (smile > 0.35f) {
+                                                            Log.d("LivenessCheck", "Smile challenge PASSED! smile=$smile")
+                                                            latestOnLivenessStatusChange(LivenessStatus.Passed)
+                                                        }
+                                                    }
+                                                    Challenge.TURN_LEFT -> {
+                                                        if (yaw > 10f) {
+                                                            Log.d("LivenessCheck", "Turn Left challenge PASSED! yaw=$yaw")
+                                                            latestOnLivenessStatusChange(LivenessStatus.Passed)
+                                                        }
+                                                    }
+                                                    Challenge.TURN_RIGHT -> {
+                                                        if (yaw < -10f) {
+                                                            Log.d("LivenessCheck", "Turn Right challenge PASSED! yaw=$yaw")
+                                                            latestOnLivenessStatusChange(LivenessStatus.Passed)
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            if (status == LivenessStatus.Passed) {
+                                                val now = System.currentTimeMillis()
+                                                if (now - lastIdentifyTime > 3000 && !isIdentifyInFlight) {
+                                                    lastIdentifyTime = now
+                                                    isIdentifyInFlight = true
+
+                                                    try {
+                                                        @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
+                                                        val rawBitmap = imageProxy.toBitmap()
+                                                        val rotationDegrees = imageProxy.imageInfo.rotationDegrees
+                                                        val rotatedBitmap = if (rotationDegrees != 0) {
+                                                            val matrix = android.graphics.Matrix().apply { postRotate(rotationDegrees.toFloat()) }
+                                                            val rb = Bitmap.createBitmap(rawBitmap, 0, 0, rawBitmap.width, rawBitmap.height, matrix, true)
+                                                            if (rb != rawBitmap) {
+                                                                rawBitmap.recycle()
+                                                            }
+                                                            rb
+                                                        } else {
+                                                            rawBitmap
+                                                        }
+
+                                                        val bitmap = resizeBitmap(rotatedBitmap, 640)
+                                                        val stream = ByteArrayOutputStream()
+                                                        bitmap.compress(Bitmap.CompressFormat.JPEG, 85, stream)
+
+                                                        if (bitmap != rotatedBitmap) {
+                                                            bitmap.recycle()
+                                                        }
+                                                        rotatedBitmap.recycle()
+
+                                                        val base64 = Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
+                                                        val imagePayload = "data:image/jpeg;base64,$base64"
+
+                                                        coroutineScope.launch {
+                                                            try {
+                                                                latestOnStatusTextChange("Checking this face...")
+                                                                Log.d("IdentifyAPI", "Sending base64 image to server...")
+                                                                val api = NetworkClient.createService(prefManager.apiUrl)
+                                                                val response = api.identifyFace(ImagePayload(imagePayload))
+                                                                val match = response.match
+                                                                Log.d("IdentifyAPI", "Result: match=${match?.name}, confidence=${response.confidence}")
+                                                                if (match != null) {
+                                                                    latestOnStatusTextChange("Familiar face recognized")
+                                                                    if (cachedPersonId != match.person_id) {
+                                                                        val summary = api.summarizePerson(SummarizeRequest(match.person_id))
+                                                                        latestOnRecognitionChange(summary)
+                                                                        cachedPersonId = match.person_id
+                                                                    } else {
+                                                                        latestOnRecognitionChange(
+                                                                            latestRecognition?.copy(
+                                                                                name = match.name,
+                                                                                relationship = match.relationship
+                                                                            )
+                                                                        )
+                                                                    }
+                                                                } else {
+                                                                    latestOnRecognitionChange(null)
+                                                                    latestOnStatusTextChange("Looking for a familiar face...")
+                                                                }
+                                                            } catch (e: Exception) {
+                                                                Log.e("IdentifyAPI", "Error calling identify API", e)
+                                                                latestOnRecognitionChange(null)
+                                                                latestOnStatusTextChange(e.message ?: "Connection failed")
+                                                            } finally {
+                                                                isIdentifyInFlight = false
+                                                            }
+                                                        }
+                                                    } catch (e: Exception) {
+                                                        Log.e("ImageConversion", "Failed converting frame to bitmap", e)
+                                                        isIdentifyInFlight = false
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            if (status == LivenessStatus.Waiting) {
+                                                latestOnStatusTextChange("Looking for a familiar face...")
+                                                latestOnRecognitionChange(null)
+                                            }
+                                        }
+                                    }
+                                    .addOnCompleteListener {
+                                        imageProxy.close()
+                                    }
+                            } else {
+                                imageProxy.close()
+                            }
+                        }
+
+                        try {
+                            cameraProvider.unbindAll()
+                            cameraProvider.bindToLifecycle(
+                                lifecycleOwner,
+                                CameraSelector.DEFAULT_FRONT_CAMERA,
+                                preview,
+                                imageAnalysis
+                            )
+                        } catch (e: Exception) {
+                            Log.e("CameraSetup", "Use case binding failed", e)
+                        }
+                    }, ContextCompat.getMainExecutor(ctx))
+                    previewView
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.fillMaxSize().padding(32.dp)
+            ) {
+                Text(
+                    text = "Camera access is needed to recognize familiar faces.",
+                    color = Color.LightGray,
+                    textAlign = TextAlign.Center,
+                    fontSize = 15.sp
+                )
+            }
+        }
+
+        // Shadow Gradient overlay
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            Color.Black.copy(alpha = 0.20f),
+                            Color.Transparent,
+                            Color.Black.copy(alpha = 0.75f)
+                        )
+                    )
+                )
+        )
+
+        // Top Left Status Pill
+        Box(
+            modifier = Modifier
+                .padding(16.dp)
+                .align(Alignment.TopStart)
+                .clip(RoundedCornerShape(20.dp))
+                .background(Color.Black.copy(alpha = 0.45f))
+                .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(20.dp))
+                .padding(horizontal = 14.dp, vertical = 8.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(MintColor)
+                )
+                Text(
+                    text = statusText,
+                    color = Color.White.copy(alpha = 0.9f),
+                    fontSize = 13.sp
+                )
+            }
+        }
+
+        // Top Right Liveness Pill
+        val (livenessBg, livenessText, livenessTint) = when (livenessStatus) {
+            LivenessStatus.Passed -> Triple(
+                Color(0x334CAF50),
+                "✓ Live verified",
+                Color(0xFF81C784)
+            )
+            LivenessStatus.Failed -> Triple(
+                Color(0x33F44336),
+                "✗ No live face detected",
+                Color(0xFFE57373)
+            )
+            LivenessStatus.Waiting -> Triple(
+                Color(0x33FFC107),
+                "👁 " + currentChallenge.name.replace("_", " "),
+                Color(0xFFFFD54F)
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .padding(16.dp)
+                .align(Alignment.TopEnd)
+                .clip(RoundedCornerShape(20.dp))
+                .background(livenessBg)
+                .border(1.dp, livenessTint.copy(alpha = 0.3f), RoundedCornerShape(20.dp))
+                .padding(horizontal = 14.dp, vertical = 8.dp)
+        ) {
+            Text(
+                text = livenessText,
+                color = livenessTint,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium
+            )
+        }
+
+        // Bottom Overlay card for Recognition Results (Now resolves to top-level AnimatedVisibility perfectly!)
+        AnimatedVisibility(
+            visible = recognition != null,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(16.dp)
+        ) {
+            recognition?.let { rec ->
+                Card(
+                    shape = RoundedCornerShape(24.dp),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color(0xEC090D16)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(MintColor.copy(alpha = 0.15f))
+                                    .border(1.dp, MintColor.copy(alpha = 0.20f), RoundedCornerShape(16.dp))
+                            ) {
+                                Text(
+                                    text = rec.name.take(1).uppercase(Locale.ROOT),
+                                    color = MintColor,
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
+                            Column(
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text(
+                                    text = rec.relationship.uppercase(Locale.ROOT),
+                                    color = MintColor,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = 1.5.sp
+                                )
+                                Text(
+                                    text = rec.name.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() },
+                                    color = Color.White,
+                                    fontSize = 20.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(MintColor.copy(alpha = 0.10f))
+                                    .border(1.dp, MintColor.copy(alpha = 0.20f), RoundedCornerShape(12.dp))
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Text(
+                                    text = "Verified Match",
+                                    color = MintColor,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+                        HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Text(
+                            text = rec.summary,
+                            color = Color(0xFFD1D5DB),
+                            fontSize = 14.sp,
+                            lineHeight = 20.sp,
+                            modifier = Modifier.padding(bottom = 12.dp)
+                        )
+
+                        Button(
+                            onClick = onShowMemoryModal,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color.White.copy(alpha = 0.05f)
+                            ),
+                            shape = RoundedCornerShape(20.dp),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                            modifier = Modifier.align(Alignment.Start)
+                        ) {
+                            Text(
+                                text = "＋ Add a memory",
+                                color = Color.LightGray,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun resizeBitmap(bitmap: Bitmap, maxDimension: Int): Bitmap {
+    val width = bitmap.width
+    val height = bitmap.height
+    if (width <= maxDimension && height <= maxDimension) return bitmap
+    
+    val aspectRatio = width.toFloat() / height.toFloat()
+    val newWidth: Int
+    val newHeight: Int
+    if (width > height) {
+        newWidth = maxDimension
+        newHeight = (maxDimension / aspectRatio).toInt()
+    } else {
+        newHeight = maxDimension
+        newWidth = (maxDimension * aspectRatio).toInt()
+    }
+    return Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true)
+}
