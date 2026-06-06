@@ -54,6 +54,15 @@ class MemoryLogRequest(BaseModel):
 class SummarizeRequest(BaseModel):
     person_id: str = Field(..., min_length=1)
 
+class SosRequest(BaseModel):
+    person_name: str = Field(..., min_length=1)
+    caregiver_phone: str = Field(..., min_length=1)
+    latitude: float
+    longitude: float
+    location_link: str = Field(..., min_length=1)
+    timestamp: str | None = Field(None)
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -264,3 +273,21 @@ async def summarize(payload: SummarizeRequest, request: Request) -> dict[str, An
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Could not generate summary.") from exc
     return {"person_id": payload.person_id, "name": person["name"], "relationship": person["relationship"], "summary": summary}
+
+@app.post("/sos", status_code=status.HTTP_201_CREATED)
+async def send_sos(payload: SosRequest, request: Request) -> dict[str, Any]:
+    alert = {
+        "person_name": payload.person_name,
+        "caregiver_phone": payload.caregiver_phone,
+        "latitude": payload.latitude,
+        "longitude": payload.longitude,
+        "location_link": payload.location_link,
+        "timestamp": payload.timestamp or utc_now().isoformat(),
+        "created_at": utc_now()
+    }
+    try:
+        await request.app.state.db.sos_alerts.insert_one(alert)
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail="Could not save SOS alert.") from exc
+    return {"status": "success", "message": f"SOS alert processed for {payload.person_name}"}
+

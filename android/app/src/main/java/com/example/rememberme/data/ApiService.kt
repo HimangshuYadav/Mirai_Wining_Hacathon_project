@@ -19,6 +19,9 @@ interface ApiService {
 
     @POST("memory/log")
     suspend fun logMemory(@Body payload: MemoryLogRequest): Map<String, Any>
+
+    @POST("sos")
+    suspend fun sendSos(@Body payload: SosRequest): Map<String, Any>
 }
 
 object NetworkClient {

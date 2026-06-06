@@ -91,6 +91,9 @@ dependencies {
   // ML Kit
   implementation(libs.mlkit.face.detection)
 
+  // Location Services
+  implementation(libs.play.services.location)
+
   // Networking
   implementation(libs.retrofit)
   implementation(libs.retrofit.converter.gson)
